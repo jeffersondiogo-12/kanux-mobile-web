@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/contexts/AuthContext';
 import { MediaPreviewModal } from '../../src/components/MediaPreviewModal';
 import { TypingIndicator } from '../../src/components/TypingIndicator';
-import { colors, spacing } from '../../src/theme';
+import { colors, spacing, borderRadius } from '../../src/theme';
 import { useOfflineMessages } from '../../src/contexts/SyncContext';
 import { useWebSocket } from '../../src/contexts/WebSocketContext';
 import { useUnreadCounts } from '../../src/contexts/NotificationContext';
@@ -15,8 +15,16 @@ import { ENV } from '../../src/lib/env';
 import { getWorkingHoursRestrictionMessage } from '../../src/lib/workingHours';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import { Audio } from 'expo-av';
+import {
+  useAudioPlayer,
+  useAudioPlayerStatus,
+  AudioModule,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  RecordingPresets,
+} from 'expo-audio';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 
 // ── Auxiliares de separador de data ─────────────────────────────────────────
 function getDateLabel(dateStr: string): string {
@@ -67,7 +75,7 @@ export default function ChatScreen() {
   const listRef = useRef<FlatList>(null);
 
   // Áudio
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [recording, setRecording] = useState<any>(null);
   const [isRecording, setIsRecording] = useState(false);
   const preparingRecordingRef = useRef(false);
 
@@ -421,13 +429,16 @@ export default function ChatScreen() {
 
     preparingRecordingRef.current = true;
     try {
-      const { granted } = await Audio.requestPermissionsAsync();
-      if (!granted) { Alert.alert('Permissão necessária', 'Habilite o acesso ao microfone.'); return; }
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording: rec } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      setRecording(rec);
+      const { granted } = await requestRecordingPermissionsAsync();
+      if (!granted) {
+        Alert.alert('Permissão necessária', 'Habilite o acesso ao microfone.');
+        return;
+      }
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      const recorder = new AudioModule.AudioRecorder(RecordingPresets.HIGH_QUALITY);
+      await recorder.prepareToRecordAsync(RecordingPresets.HIGH_QUALITY);
+      recorder.record();
+      setRecording(recorder);
       setIsRecording(true);
     } catch (e) {
       console.error('Erro ao iniciar gravação:', e);
@@ -443,9 +454,10 @@ export default function ChatScreen() {
     setIsRecording(false);
     setSending(true);
     try {
-      await recording.stopAndUnloadAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
-      const uri = recording.getURI();
+      await recording.stop();
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      const uri = recording.uri;
+      recording.remove?.();
       setRecording(null);
       if (!uri) return;
       const fileName = `audio_${Date.now()}.m4a`;
@@ -479,13 +491,14 @@ export default function ChatScreen() {
   const listItems = useMemo(() => buildListItems(sortedMessages, profile?.id), [sortedMessages, profile?.id]);
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : (StatusBar.currentHeight ?? 0)}
-    >
+    <AnimatedContainer type="fade" duration={200}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : (StatusBar.currentHeight ?? 0)}
+      >
         {/* Barra de informações do chat */}
-      <View style={styles.chatHeader}>
+        <View style={styles.chatHeader}>
         <View style={styles.chatHeaderInfo}>
           <Text style={styles.chatHeaderName}>{chatInfo?.name || 'Chat'}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -627,17 +640,27 @@ export default function ChatScreen() {
               multiline
               maxLength={1000}
             />
-            {sending ? (
-              <ActivityIndicator size="small" color={colors.primary} style={{ marginLeft: spacing.sm }} />
-            ) : (
-              <TouchableOpacity
-                style={[styles.sendButton, !newMessage.trim() && styles.sendButtonDisabled]}
-                onPress={handleSend}
-                disabled={!newMessage.trim()}
-              >
-                <Ionicons name="send" size={18} color="#fff" />
-              </TouchableOpacity>
-            )}
+{sending ? (
+          <ActivityIndicator size="small" color="#FFFFFF" style={{ marginLeft: spacing.sm }} />
+        ) : (
+          <TouchableOpacity
+            onPress={handleSend}
+            disabled={!newMessage.trim()}
+            activeOpacity={0.7}
+          >
+            <LinearGradient
+              colors={['#8B5CF6', '#6D28D9']}
+              style={[
+                styles.sendButton,
+                !newMessage.trim() && styles.sendButtonDisabled,
+              ]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+            >
+              <Ionicons name="send" size={18} color="#fff" />
+            </LinearGradient>
+          </TouchableOpacity>
+        )}
           </>
         ) : (
           <View style={styles.blockedInput}>
@@ -726,43 +749,51 @@ export default function ChatScreen() {
         </View>
       </Modal>
     </KeyboardAvoidingView>
+    </AnimatedContainer>
   );
 }
 
 // ── Componente AudioPlayer inline ────────────────────────────────────────
 function AudioPlayer({ url, isMyMessage }: { url: string; isMyMessage: boolean }) {
-  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const player = useAudioPlayer(url, { downloadFirst: true });
+  const status = useAudioPlayerStatus(player);
   const [playing, setPlaying] = useState(false);
 
-  async function togglePlay() {
-    if (!playing) {
-      if (sound) {
-        await sound.replayAsync();
-      } else {
-        const { sound: s } = await Audio.Sound.createAsync(
-          { uri: url },
-          { shouldPlay: true }
-        );
-        s.setOnPlaybackStatusUpdate((status: any) => {
-          if (status.didJustFinish) { setPlaying(false); }
-        });
-        setSound(s);
-      }
-      setPlaying(true);
-    } else {
-      if (sound) await sound.pauseAsync();
+  useEffect(() => {
+    if (status.didJustFinish && playing) {
       setPlaying(false);
     }
-  }
+  }, [status.didJustFinish, playing]);
 
   useEffect(() => {
-    return () => { sound?.unloadAsync(); };
-  }, [sound]);
+    return () => {
+      try {
+        player.pause();
+        player.remove?.();
+      } catch (e) {
+        // ignore cleanup errors
+      }
+    };
+  }, [player]);
+
+  async function togglePlay() {
+    try {
+      if (!playing) {
+        player.play();
+        setPlaying(true);
+      } else {
+        player.pause();
+        setPlaying(false);
+      }
+    } catch (e) {
+      console.error('Erro ao tocar áudio:', e);
+    }
+  }
 
   return (
     <TouchableOpacity style={audioStyles.row} onPress={togglePlay}>
       <Ionicons name={playing ? 'pause-circle' : 'play-circle'} size={32} color={isMyMessage ? '#fff' : colors.primary} />
-      <Text style={[audioStyles.label, isMyMessage && { color: '#fff' }]}>
+      <Text style={[audioStyles.label, isMyMessage && { color: '#fff' }]}> 
         {playing ? 'Pausar' : 'Áudio'}
       </Text>
     </TouchableOpacity>
@@ -783,7 +814,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     padding: spacing.md,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceContainer,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
@@ -819,7 +850,7 @@ const styles = StyleSheet.create({
   messageBubble: {
     maxWidth: '80%',
     padding: spacing.sm,
-    borderRadius: 12,
+    borderRadius: borderRadius.md,
     marginBottom: spacing.sm,
   },
   myMessage: {
@@ -828,7 +859,7 @@ const styles = StyleSheet.create({
   },
   otherMessage: {
     alignSelf: 'flex-start',
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceContainerLow,
   },
   messageText: {
     color: colors.text,
@@ -865,7 +896,7 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     padding: spacing.sm,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceContainer,
     borderTopWidth: 1,
     borderTopColor: colors.border,
     alignItems: 'flex-end',
@@ -873,7 +904,7 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     backgroundColor: colors.background,
-    borderRadius: 20,
+    borderRadius: borderRadius.full,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     color: colors.text,
@@ -909,13 +940,13 @@ const styles = StyleSheet.create({
   // Estilos do Modal de Membros
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: colors.overlay,
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    backgroundColor: colors.surfaceContainer,
+    borderTopLeftRadius: borderRadius.lg,
+    borderTopRightRadius: borderRadius.lg,
     padding: spacing.lg,
     maxHeight: '80%',
   },
@@ -948,13 +979,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: spacing.sm,
     marginBottom: spacing.xs,
-    borderRadius: 8,
+    borderRadius: borderRadius.sm,
     backgroundColor: colors.background,
   },
   memberAvatar: {
     width: 36,
     height: 36,
-    borderRadius: 18,
+    borderRadius: borderRadius.full,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
@@ -998,13 +1029,13 @@ const styles = StyleSheet.create({
   msgAvatar: {
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: borderRadius.full,
     marginRight: 6,
   },
   msgAvatarPlaceholder: {
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: borderRadius.full,
     backgroundColor: colors.primary + '40',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1036,7 +1067,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: 10,
+    borderRadius: borderRadius.full,
     overflow: 'hidden',
   },
   myMessageText: {
@@ -1045,7 +1076,7 @@ const styles = StyleSheet.create({
   onlineDot: {
     width: 8,
     height: 8,
-    borderRadius: 4,
+    borderRadius: borderRadius.sm,
   },
   onlineDotActive: {
     backgroundColor: '#22C55E',
@@ -1056,13 +1087,13 @@ const styles = StyleSheet.create({
   memberAvatarImg: {
     width: 36,
     height: 36,
-    borderRadius: 18,
+    borderRadius: borderRadius.full,
   },
   // ── Estilos de mídia ──
   mediaImage: {
     width: 200,
     height: 150,
-    borderRadius: 8,
+    borderRadius: borderRadius.sm,
     marginBottom: 4,
   },
   documentRow: {
@@ -1088,13 +1119,12 @@ const styles = StyleSheet.create({
   },
   mediaButtonRecording: {
     backgroundColor: colors.error + '22',
-    borderRadius: 20,
+    borderRadius: borderRadius.full,
   },
   sendButton: {
-    backgroundColor: colors.primary,
-    borderRadius: 20,
-    width: 36,
-    height: 36,
+    borderRadius: borderRadius.full,
+    width: 40,
+    height: 40,
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: spacing.xs,

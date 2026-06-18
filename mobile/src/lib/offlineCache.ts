@@ -1,14 +1,10 @@
-// Camada de cache offline e sincronização para o app mobile Kanux
-// Usa SQLite para dados principais e AsyncStorage para controle de sincronização
-
-import * as SQLite from 'expo-sqlite';
+import { openDatabaseSync } from 'expo-sqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // API nova do expo-sqlite (SDK 54+): openDatabaseSync no lugar de openDatabase
 // (tipo inferido automaticamente a partir do retorno, evita conflitos de namespace/tipo)
 const db = SQLite.openDatabaseSync('kanux.db');
 
-// Inicializa tabelas principais
 export function initDatabase() {
   db.execSync(
     `CREATE TABLE IF NOT EXISTS chats (
@@ -68,12 +64,10 @@ export async function addPendingOperation(op: any) {
   await AsyncStorage.setItem('pendingOps', JSON.stringify(pending));
 }
 
-// Recupera operações pendentes
 export async function getPendingOperations() {
   return JSON.parse((await AsyncStorage.getItem('pendingOps')) || '[]');
 }
 
-// Limpa operações pendentes
 export async function clearPendingOperations() {
   await AsyncStorage.removeItem('pendingOps');
 }
